@@ -10,7 +10,7 @@ fn args(a: &[&str]) -> Vec<String> {
 fn files_and_the_control_port() {
     assert_eq!(parse(&args(&[])), Args::default());
     let a = parse(&args(&["--control", "4242", "a.figcraft", "--verbose", "b.svg"]));
-    assert_eq!(a, Args { control: Some(4242), files: args(&["a.figcraft", "b.svg"]), join: None });
+    assert_eq!(a, Args { control: Some(4242), files: args(&["a.figcraft", "b.svg"]), join: None, no_mcp: false });
     // A missing or bad port is ignored, not taken as a file.
     assert_eq!(parse(&args(&["--control"])), Args::default());
     assert_eq!(parse(&args(&["--control", "nope"])).control, None);
@@ -40,4 +40,12 @@ fn file_urls_are_paths() {
     for bad in ["file://server/share/a.svg", "file:///broken%2", "file:///bad%zz", "file:///%FF", "file:", "fi", "ü€file:///x"] {
         assert_eq!(file_url_path(bad), None, "{bad}");
     }
+}
+
+#[test]
+fn no_mcp_turns_the_built_in_mcp_server_off_and_is_not_a_file() {
+    let a = parse(&args(&["--no-mcp", "a.figcraft"]));
+    assert!(a.no_mcp);
+    assert_eq!(a.files, args(&["a.figcraft"]));
+    assert!(!parse(&args(&["a.figcraft"])).no_mcp);
 }

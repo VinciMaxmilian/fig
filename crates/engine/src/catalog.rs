@@ -39,6 +39,8 @@ pub static MENU: &[MenuItem] = &[
     // FigCraft's own (live sessions): not in the reference menu, so not counted by `parity`.
     m!("File", "Join live session…", "collab.join"),
     m!("File", "Publish to server…", "collab.publish"),
+    // FigCraft's own: how AI assistants connect to the app's MCP server.
+    m!("File", "MCP…", "mcp.setup"),
     m!("File", SEP, ""),
     m!("File", "Export…", "file.export"),
     m!("File", "Export frames to PDF…", "file.exportFramesPdf"),
@@ -287,7 +289,7 @@ pub fn items() -> impl Iterator<Item = &'static MenuItem> {
 }
 
 /// Items of FigCraft's own that the parity count leaves out (as it does the `collab.` ones).
-const OWN: [&str; 2] = ["file.newFromTemplate", "help.gettingStarted"];
+const OWN: [&str; 3] = ["file.newFromTemplate", "help.gettingStarted", "mcp.setup"];
 
 /// Coverage: (implemented, total, missing ids). `extra` lists ids implemented by the UI layer.
 pub fn parity(extra: &[&str]) -> (usize, usize, Vec<&'static str>) {

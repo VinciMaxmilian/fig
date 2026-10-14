@@ -1,4 +1,4 @@
-//! The command line: `figcraft [--control <port>] [files…] [figcraft://join?…]`. An invite link
+//! The command line: `figcraft [--control <port>] [--no-mcp] [files…] [figcraft://join?…]`. An invite link
 //! (what the system passes when a `figcraft://` link is opened) joins that session once the window
 //! is up; everything else that isn't a flag is a file to open, as a path or a `file://` URL (the
 //! Linux desktop entry passes URLs, `%U`, so that it can also hand over invite links).
@@ -8,6 +8,8 @@
 pub struct Args {
     /// `--control <port>`: the JSON-lines control server.
     pub control: Option<u16>,
+    /// `--no-mcp`: don't start the built-in MCP server (or set `FIGCRAFT_NO_MCP`).
+    pub no_mcp: bool,
     pub files: Vec<String>,
     /// The last invite link given.
     pub join: Option<String>,
@@ -51,6 +53,8 @@ pub fn parse(args: &[String]) -> Args {
     while let Some(a) = it.next() {
         if a == "--control" {
             out.control = it.next().and_then(|p| p.parse().ok());
+        } else if a == "--no-mcp" {
+            out.no_mcp = true;
         } else if is_invite(a) {
             out.join = Some(a.clone());
         } else if let Some(path) = file_url_path(a) {

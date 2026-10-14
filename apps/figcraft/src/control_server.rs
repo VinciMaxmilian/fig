@@ -26,41 +26,75 @@ pub fn drain_queue(queue: &Queue, target: &mut Vec<ControlRequest>) {
     target.extend(queue.drain(..count));
 }
 
-pub fn start(port: u16, queue: Queue, ctx: CtxSlot) {
+/// Listen on `127.0.0.1:port` (0: any free port) and return the port. With a `token`, a connection
+/// must send `{"method":"auth","params":{"token":…}}` first; without one (`--control`) it is open
+/// to every program of this user, as before.
+pub fn start(port: u16, token: Option<String>, queue: Queue, ctx: CtxSlot) -> Option<u16> {
     let listener = match TcpListener::bind(("127.0.0.1", port)) {
         Ok(l) => l,
         Err(e) => {
             log::error!("control server: can't bind 127.0.0.1:{port}: {e} (another app may own it; pick another port)");
             eprintln!("FigCraft control server failed to bind port {port}: {e}");
-            return;
+            return None;
         }
     };
-    eprintln!("FigCraft control server listening on 127.0.0.1:{port}");
+    let bound = listener.local_addr().ok()?.port();
+    eprintln!("FigCraft control server listening on 127.0.0.1:{bound}");
+    let token: Option<Arc<str>> = token.map(Into::into);
     let spawned = std::thread::Builder::new().name("figcraft-control".into()).spawn(move || {
         let mut workers = Vec::new();
         for stream in listener.incoming().flatten() {
-            spawn_connection(stream, queue.clone(), ctx.clone(), &mut workers, TIMEOUT);
+            spawn_connection_with(stream, queue.clone(), ctx.clone(), &mut workers, TIMEOUT, token.clone());
         }
     });
     if let Err(e) = spawned {
         log::error!("control server thread: {e}");
+        return None;
     }
+    Some(bound)
 }
 
+#[cfg(test)]
 fn spawn_connection(stream: TcpStream, queue: Queue, ctx: CtxSlot, workers: &mut Vec<std::thread::JoinHandle<()>>, timeout: Duration) {
+    spawn_connection_with(stream, queue, ctx, workers, timeout, None);
+}
+
+fn spawn_connection_with(
+    stream: TcpStream,
+    queue: Queue,
+    ctx: CtxSlot,
+    workers: &mut Vec<std::thread::JoinHandle<()>>,
+    timeout: Duration,
+    token: Option<Arc<str>>,
+) {
     workers.retain(|worker| !worker.is_finished());
     if workers.len() >= MAX_CONNECTIONS {
         return;
     }
     match std::thread::Builder::new().name("figcraft-control-conn".into()).spawn(move || {
-        let _ = serve(stream, queue, ctx, timeout);
+        let _ = serve_with(stream, queue, ctx, timeout, token.as_deref());
     }) {
         Ok(worker) => workers.push(worker),
         Err(e) => log::error!("control connection thread: {e}"),
     }
 }
 
-fn serve(mut out: TcpStream, queue: Queue, ctx: CtxSlot, timeout: Duration) -> std::io::Result<()> {
+#[cfg(test)]
+fn serve(out: TcpStream, queue: Queue, ctx: CtxSlot, timeout: Duration) -> std::io::Result<()> {
+    serve_with(out, queue, ctx, timeout, None)
+}
+
+/// Whether `a` equals `b`, taking the same time wherever they differ.
+fn same_secret(a: &str, b: &str) -> bool {
+    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
+}
+
+fn serve_with(mut out: TcpStream, queue: Queue, ctx: CtxSlot, timeout: Duration, token: Option<&str>) -> std::io::Result<()> {
+    // Protocol lines are JSON objects. A web page can make a browser send text to this port, but
+    // only as HTTP (`POST / HTTP/1.1`, `GET …` for a WebSocket), so a connection that doesn't open
+    // with `{` is dropped before anything is dispatched.
+    let mut first = true;
+    let mut authed = token.is_none();
     out.set_read_timeout(Some(timeout))?;
     out.set_write_timeout(Some(timeout))?;
     let mut reader = BufReader::new(out.try_clone()?);
@@ -80,6 +114,26 @@ fn serve(mut out: TcpStream, queue: Queue, ctx: CtxSlot, timeout: Duration) -> s
         let Ok(line) = std::str::from_utf8(&line) else { break };
         if line.trim().is_empty() {
             continue;
+        }
+        if std::mem::take(&mut first) && !line.trim_start().starts_with('{') {
+            break;
+        }
+        if !authed {
+            let sent = serde_json::from_str::<Value>(line).ok();
+            let id = sent.as_ref().and_then(|v| v.get("id").cloned()).unwrap_or(Value::Null);
+            let is_auth = sent.as_ref().and_then(|v| v.get("method")).and_then(Value::as_str) == Some("auth");
+            let given = sent.as_ref().filter(|_| is_auth).and_then(|v| v.pointer("/params/token")).and_then(Value::as_str).unwrap_or("");
+            if token.is_some_and(|t| same_secret(t, given)) {
+                authed = true;
+                writeln!(out, "{}", json!({"id": id, "ok": true, "result": {}}))?;
+                continue;
+            }
+            writeln!(
+                out,
+                "{}",
+                json!({"id": id, "ok": false, "error": "authentication required: send {\"method\":\"auth\",\"params\":{\"token\":…}} first"})
+            )?;
+            break;
         }
         let reply = match serde_json::from_str::<Value>(line) {
             Ok(v) => {

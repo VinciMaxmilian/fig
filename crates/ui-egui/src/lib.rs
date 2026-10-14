@@ -37,6 +37,7 @@ pub mod layout_panel;
 pub mod list_drag;
 pub mod live;
 pub mod live_text;
+pub mod mcp_dialog;
 pub mod measure_overlay;
 pub mod menus;
 pub mod online;
@@ -207,6 +208,14 @@ pub trait Services {
     fn gamepad_held(&mut self) -> u32 {
         0
     }
+    /// The loopback port the built-in MCP server listens on, when it is on (File ▸ MCP…).
+    fn mcp_port(&self) -> Option<u16> {
+        None
+    }
+    /// `figcraft-cli`, the program MCP clients start, when it sits next to the app.
+    fn mcp_cli(&self) -> Option<PathBuf> {
+        None
+    }
 }
 
 /// No-op services (tests, headless screenshots).
@@ -344,6 +353,8 @@ pub struct UiState {
     pub export_preview: bool,
     /// The Export dialog's PDF print options (bleed, marks, CMYK).
     pub pdf_print: figcraft_doc::PrintSettings,
+    /// The MCP window (File ▸ MCP…) is open.
+    pub mcp: bool,
     /// The Color profile dialog is open, with this profile chosen.
     pub color_profile: Option<figcraft_color::ColorProfile>,
     /// The open style picker.
@@ -442,6 +453,7 @@ impl Default for UiState {
             quit: false,
             export_preview: false,
             pdf_print: figcraft_doc::PrintSettings::default(),
+            mcp: false,
             color_profile: None,
             style_picker: None,
             style_grid: false,
@@ -682,6 +694,7 @@ impl FigApp {
                     self.services.save_prefs(&self.session.prefs);
                 }
                 "dialog.saveAs" => self.save_as_dialog(),
+                "dialog.mcp" => self.ui.mcp = true,
                 "dialog.colorProfile" => self.ui.color_profile = self.session.doc().ok().map(|d| d.color_profile),
                 "present" => {
                     if let Some(start) = r.data.get("start").and_then(figcraft_engine::params::id_of) {

@@ -142,7 +142,7 @@ fn connection_limit_rejects_excess_clients_and_reuses_finished_slots() {
     let (mut client, server) = pair();
     spawn_connection(server, pending, ctx, &mut workers, Duration::from_secs(5));
     assert_eq!(workers.len(), 1);
-    client.write_all(b"invalid\n").unwrap();
+    client.write_all(b"{invalid\n").unwrap();
     assert_eq!(reply(&mut BufReader::new(client.try_clone().unwrap()))["ok"], false);
     client.shutdown(Shutdown::Both).unwrap();
     workers.pop().unwrap().join().unwrap();
@@ -259,4 +259,66 @@ fn timed_out_requests_release_a_full_deferred_ui_queue() {
     for worker in workers {
         worker.join().unwrap().unwrap();
     }
+}
+
+#[test]
+fn a_browser_request_is_dropped_without_dispatching_its_body() {
+    // What a web page can make the browser send to 127.0.0.1:port: HTTP whose body is a command.
+    let (mut client, server) = pair();
+    let pending = queue();
+    let q = pending.clone();
+    let worker = std::thread::spawn(move || serve(server, q, context(), Duration::from_secs(5)));
+    let body = r#"{"id":1,"method":"engine.execute","params":{"command":"file.saveAs","params":{"path":"x"}}}"#;
+    let http = format!("POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{body}\n", body.len());
+    client.write_all(http.as_bytes()).unwrap();
+    let mut reader = BufReader::new(client);
+    assert_eq!(reader.read(&mut [0]).unwrap(), 0, "closed with no reply");
+    worker.join().unwrap().unwrap();
+    assert!(pending.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_token_is_required_before_any_request_is_dispatched() {
+    let ask = r#"{"id":7,"method":"engine.commands","params":{}}"#;
+    // Without it: refused, and the connection is closed.
+    let (mut client, server) = pair();
+    let pending = queue();
+    let q = pending.clone();
+    let worker = std::thread::spawn(move || serve_with(server, q, context(), Duration::from_secs(5), Some("s3cret")));
+    writeln!(client, "{ask}").unwrap();
+    let mut reader = BufReader::new(client);
+    let r = reply(&mut reader);
+    assert_eq!((r["ok"].clone(), r["id"].clone()), (json!(false), json!(7)));
+    assert_eq!(reader.read(&mut [0]).unwrap(), 0);
+    worker.join().unwrap().unwrap();
+    assert!(pending.lock().unwrap().is_empty());
+    // A wrong token is refused the same way.
+    let (mut client, server) = pair();
+    let worker = std::thread::spawn(move || serve_with(server, queue(), context(), Duration::from_secs(5), Some("s3cret")));
+    writeln!(client, r#"{{"id":1,"method":"auth","params":{{"token":"s3cre"}}}}"#).unwrap();
+    let mut reader = BufReader::new(client);
+    assert_eq!(reply(&mut reader)["ok"], false);
+    worker.join().unwrap().unwrap();
+    // The right one lets requests through.
+    let (mut client, server) = pair();
+    let pending = queue();
+    let q = pending.clone();
+    let worker = std::thread::spawn(move || serve_with(server, q, context(), Duration::from_secs(5), Some("s3cret")));
+    writeln!(client, r#"{{"id":1,"method":"auth","params":{{"token":"s3cret"}}}}"#).unwrap();
+    writeln!(client, "{ask}").unwrap();
+    let mut reader = BufReader::new(client);
+    assert_eq!(reply(&mut reader)["ok"], true);
+    let start = Instant::now();
+    let r = loop {
+        if let Some(r) = pending.lock().unwrap().pop() {
+            break r;
+        }
+        assert!(start.elapsed() < Duration::from_secs(5));
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert_eq!(r.method, "engine.commands");
+    r.reply.send(figcraft_ui_egui::ControlReply { id: r.id, result: Ok(json!([])) }).unwrap();
+    assert_eq!(reply(&mut reader), json!({"id": 7, "ok": true, "result": []}));
+    reader.get_ref().shutdown(Shutdown::Write).unwrap();
+    worker.join().unwrap().unwrap();
 }

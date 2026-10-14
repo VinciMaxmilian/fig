@@ -104,6 +104,10 @@ pub fn specs() -> Vec<CommandSpec> {
             true,
             color_profile
         ),
+        spec!("mcp.setup", "MCP", "{}  opens the MCP window: the setup text for AI assistants (Claude, Cursor, Codex…)", false, |s, _| {
+            s.request_ui("dialog.mcp", json!({}));
+            ok()
+        }),
         spec!("file.duplicate", "Duplicate file", "{}", false, |s, _| {
             let ds = s.ds()?;
             let mut d = (*ds.doc).clone();

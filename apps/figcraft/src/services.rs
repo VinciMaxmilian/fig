@@ -19,6 +19,8 @@ pub struct Desktop {
     language: Option<String>,
     /// Recovery copies of unsaved files (written at once after a panic).
     recovery: crate::recovery::Shared,
+    /// The port the MCP server listens on (`None`: it is off).
+    pub mcp_port: Option<u16>,
 }
 
 pub fn config_dir() -> Option<PathBuf> {
@@ -53,7 +55,7 @@ impl Desktop {
         let reduce_motion = Arc::new(AtomicBool::new(false));
         let flag = reduce_motion.clone();
         std::thread::spawn(move || flag.store(system_reduce_motion(), Ordering::Relaxed));
-        Self { clipboard: arboard::Clipboard::new().ok(), dir, prefs, reduce_motion, language: system_language(), recovery }
+        Self { clipboard: arboard::Clipboard::new().ok(), dir, prefs, reduce_motion, language: system_language(), recovery, mcp_port: None }
     }
 }
 
@@ -195,6 +197,13 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 impl Services for Desktop {
+    fn mcp_port(&self) -> Option<u16> {
+        self.mcp_port
+    }
+    fn mcp_cli(&self) -> Option<PathBuf> {
+        let name = if cfg!(windows) { "figcraft-cli.exe" } else { "figcraft-cli" };
+        std::env::current_exe().ok()?.parent().map(|d| d.join(name)).filter(|p| p.is_file())
+    }
     fn pick_open(&mut self, title: &str, exts: &[&str]) -> Option<PathBuf> {
         rfd::FileDialog::new().set_title(title).add_filter("Supported files", exts).pick_file()
     }

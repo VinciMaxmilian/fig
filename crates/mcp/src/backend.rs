@@ -93,6 +93,8 @@ pub fn decode_data(v: &Value) -> Result<Vec<u8>, String> {
 /// A running FigCraft app, reached through its loopback control port (`figcraft --control PORT`).
 pub struct Attached {
     addr: String,
+    /// Sent as the first line of every connection when the app asks for one.
+    token: Option<String>,
     conn: Option<(BufReader<TcpStream>, TcpStream)>,
     next_id: u64,
 }
@@ -100,7 +102,14 @@ pub struct Attached {
 impl Attached {
     /// Connect to `addr` (e.g. `127.0.0.1:7979`), failing fast when nothing is listening.
     pub fn connect(addr: &str) -> std::io::Result<Self> {
-        let mut r = Self { addr: addr.to_string(), conn: None, next_id: 1 };
+        let mut r = Self { addr: addr.to_string(), token: None, conn: None, next_id: 1 };
+        r.reconnect()?;
+        Ok(r)
+    }
+
+    /// Connect to an app that wants its token first (see [`crate::discovery`]).
+    pub fn connect_with_token(addr: &str, token: &str) -> std::io::Result<Self> {
+        let mut r = Self { addr: addr.to_string(), token: Some(token.to_string()), conn: None, next_id: 1 };
         r.reconnect()?;
         Ok(r)
     }
@@ -125,6 +134,17 @@ impl Attached {
                     s.set_read_timeout(Some(Duration::from_secs(90))).ok();
                     let read = s.try_clone()?;
                     self.conn = Some((BufReader::new(read), s));
+                    if let Some(token) = self.token.clone() {
+                        let hello = json!({"id": 0, "method": "auth", "params": {"token": token}}).to_string();
+                        let reply = self.roundtrip(&hello)?;
+                        if serde_json::from_str::<Value>(reply.trim()).ok().and_then(|v| v.get("ok").and_then(Value::as_bool)) != Some(true) {
+                            self.conn = None;
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::PermissionDenied,
+                                "the app refused the token (it was restarted? start `figcraft-cli mcp --app` again)",
+                            ));
+                        }
+                    }
                     return Ok(());
                 }
                 Err(e) => last = e,

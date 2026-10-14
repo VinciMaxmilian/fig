@@ -134,7 +134,7 @@ fn main() -> eframe::Result {
     let recovery_root = services::config_dir().map(|d| d.join("Recovery"));
     // The preferences first: they hold the online files a recovered document may be one of.
     let recovery = recovery::Shared::default();
-    let svc = services::Desktop::load(recovery.clone());
+    let mut svc = services::Desktop::load(recovery.clone());
     if let Some(prefs) = svc.prefs.clone() {
         session.prefs = prefs;
     }
@@ -157,15 +157,19 @@ fn main() -> eframe::Result {
     if session.docs.is_empty() && !first_run {
         let _ = session.execute("file.new", &json!({}));
     }
+    // The built-in MCP server: `figcraft-cli mcp --app` (what File ▸ MCP… sets up in AI clients)
+    // finds it through the endpoint file. Its token keeps other programs and web pages out.
+    let queue: Arc<Mutex<Vec<ControlRequest>>> = Arc::new(Mutex::new(Vec::new()));
+    let mcp_endpoint = if args.no_mcp || std::env::var_os("FIGCRAFT_NO_MCP").is_some() { None } else { start_mcp(&queue, &ctx_slot) };
+    svc.mcp_port = mcp_endpoint.as_ref().map(|e| e.port);
     let mut fig = FigApp::new(session, Box::new(svc));
     fig.ui.home = false;
     fig.note_recovered(recovered.copies);
     if let Some(link) = &args.join {
         figcraft_ui_egui::live::open_invite(&mut fig, link);
     }
-    let queue: Arc<Mutex<Vec<ControlRequest>>> = Arc::new(Mutex::new(Vec::new()));
     if let Some(p) = port {
-        control_server::start(p, queue.clone(), ctx_slot.clone());
+        control_server::start(p, None, queue.clone(), ctx_slot.clone());
     }
     let icon = services::window_icon();
     let mut viewport = egui::ViewportBuilder::default()
@@ -188,5 +192,24 @@ fn main() -> eframe::Result {
     let mut options = eframe::NativeOptions { viewport, renderer: eframe::Renderer::Wgpu, ..Default::default() };
     graphics::configure(&mut options.wgpu_options);
     figcraft_ui_egui::windows::install(fig);
-    eframe::run_native("FigCraft", options, Box::new(move |_cc| Ok(Box::new(App { queue, ctx_slot, title: String::new(), recovery }))))
+    let ran = eframe::run_native("FigCraft", options, Box::new(move |_cc| Ok(Box::new(App { queue, ctx_slot, title: String::new(), recovery }))));
+    if let (Some(endpoint), Some(dir)) = (&mcp_endpoint, services::config_dir()) {
+        figcraft_mcp::discovery::remove(&dir, endpoint);
+    }
+    ran
+}
+
+/// Start the MCP server on a free loopback port and publish where it is.
+fn start_mcp(queue: &Arc<Mutex<Vec<ControlRequest>>>, ctx_slot: &Arc<Mutex<Option<egui::Context>>>) -> Option<figcraft_mcp::discovery::Endpoint> {
+    let token = figcraft_collab_net::token::secret().inspect_err(|e| log::warn!("MCP server: {e}; it stays off")).ok()?;
+    let port = control_server::start(0, Some(token.clone()), queue.clone(), ctx_slot.clone())?;
+    let endpoint = figcraft_mcp::discovery::Endpoint { port, token, pid: std::process::id() };
+    let dir = services::config_dir()?;
+    match figcraft_mcp::discovery::write(&dir, &endpoint) {
+        Ok(()) => Some(endpoint),
+        Err(e) => {
+            log::warn!("MCP server: can't write {}: {e}", figcraft_mcp::discovery::file_in(&dir).display());
+            None
+        }
+    }
 }

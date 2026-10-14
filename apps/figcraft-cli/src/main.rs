@@ -23,7 +23,7 @@ USAGE:
   figcraft-cli render <file> -o <out.png> [--scale N] [--page NAME]
   figcraft-cli run <script.json|script.jsonl> [--in <file>] [--out <file>]
   figcraft-cli commands [--json] [--filter TEXT]
-  figcraft-cli mcp [--attach PORT]
+  figcraft-cli mcp [--app | --attach PORT]
   figcraft-cli plugin publish <folder> --server ws://host:port/[?key=KEY]
   figcraft-cli perf [--layers N[,N...]] [--instances N[,N...]]
   figcraft-cli help | --help | --version
@@ -133,11 +133,14 @@ fn run(argv: &[String]) -> CliResult<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         "mcp" => {
-            let a = Args::parse(rest, &["attach"], &[])?;
+            let a = Args::parse(rest, &["attach"], &["app"])?;
             if !a.positional.is_empty() {
                 return Err(CliError::Usage("mcp takes no positional arguments".into()));
             }
-            mcp(a.value("attach").as_deref())
+            if a.flag("app") && a.value("attach").is_some() {
+                return Err(CliError::Usage("mcp takes --app or --attach PORT, not both".into()));
+            }
+            mcp(a.value("attach").as_deref(), a.flag("app"))
         }
         "plugin" => {
             let a = Args::parse(rest, &["server"], &[])?;
@@ -205,8 +208,17 @@ fn publish_plugin(folder: &str, server: &str) -> CliResult<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn mcp(attach: Option<&str>) -> CliResult<ExitCode> {
+fn mcp(attach: Option<&str>, app: bool) -> CliResult<ExitCode> {
     let backend: Box<dyn figcraft_mcp::Backend> = match attach {
+        None if app => {
+            let dir = figcraft_mcp::discovery::config_dir()
+                .ok_or_else(|| "can't tell where the FigCraft app keeps its settings on this system".to_string())?;
+            let endpoint =
+                figcraft_mcp::discovery::read(&dir).map_err(|e| format!("the FigCraft app isn't running (open it, then start this again): {e}"))?;
+            let b = figcraft_mcp::Attached::connect_with_token(&endpoint.addr(), &endpoint.token)
+                .map_err(|e| format!("can't reach the FigCraft app at {}: {e} (is it open?)", endpoint.addr()))?;
+            Box::new(b)
+        }
         Some(p) => {
             let addr = if p.contains(':') {
                 p.to_string()

@@ -16,6 +16,12 @@ The server lives in `crates/mcp` (`figcraft-mcp`) and is started by the CLI:
 |---|---|
 | `figcraft-cli mcp` | **Headless**: an in-process engine session with one untitled document. No window; renders with the CPU renderer. |
 | `figcraft-cli mcp --attach <port>` | **Attached**: drives a running FigCraft app through its control channel (`figcraft --control <port>`). The user sees every change live. |
+| `figcraft-cli mcp --app` | **Attached to the app's built-in server**: the desktop app starts an MCP endpoint by itself (unless started with `--no-mcp` or `FIGCRAFT_NO_MCP`), on a free loopback port with a per-run token. It writes both to `mcp-endpoint.json` in its settings folder (readable by its user only) and `--app` reads that file, so client configs hold no port or token and survive restarts. **File ▸ MCP…** shows the setup text for Claude Desktop, Claude Code, Cursor and Codex. |
+
+
+Every control port (this one and `--control`) drops a connection whose first line isn't a JSON
+object, so a web page can't drive the app by making the browser POST to it; the built-in endpoint
+also requires `{"method":"auth","params":{"token":…}}` first.
 
 `--attach` also takes `host:port`. The control channel only listens on 127.0.0.1.
 
